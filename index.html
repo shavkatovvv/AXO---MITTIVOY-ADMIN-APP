@@ -1,0 +1,179 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>АХО Mittivoy — Админка</title>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<style>
+  :root {
+    --bg: var(--tg-theme-bg-color, #ffffff);
+    --text: var(--tg-theme-text-color, #1c1c1e);
+    --hint: var(--tg-theme-hint-color, #8e8e93);
+    --button: var(--tg-theme-button-color, #2f6ef2);
+    --button-text: var(--tg-theme-button-text-color, #ffffff);
+    --secondary-bg: var(--tg-theme-secondary-bg-color, #f2f2f7);
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    background: var(--bg); color: var(--text); padding: 16px;
+  }
+  h1 { font-size: 20px; margin: 0 0 4px; }
+  .subtitle { color: var(--hint); font-size: 14px; margin-bottom: 20px; }
+
+  .tabs { display: flex; gap: 8px; margin-bottom: 20px; }
+  .tab { flex: 1; padding: 10px; text-align: center; border-radius: 10px; background: var(--secondary-bg); font-size: 14px; cursor: pointer; }
+  .tab.active { background: var(--button); color: var(--button-text); }
+
+  .card { background: var(--secondary-bg); border-radius: 14px; padding: 14px; margin-bottom: 10px; }
+  .req-top { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; }
+  .req-type { font-size: 12px; color: var(--hint); text-transform: uppercase; letter-spacing: 0.03em; }
+  .req-desc { font-size: 15px; margin: 4px 0; }
+  .req-meta { font-size: 12px; color: var(--hint); }
+
+  .status { font-size: 12px; padding: 4px 10px; border-radius: 20px; font-weight: 600; }
+  .status-новая { background: #ffe8b3; color: #8a5a00; }
+  .status-одобрена { background: #cfe4ff; color: #1a4fa0; }
+  .status-отклонена { background: #fbd0d0; color: #9c1c1c; }
+  .status-в-работе { background: #d8d1ff; color: #4a3aa8; }
+  .status-выполнена { background: #cdf0d3; color: #1e7a34; }
+
+  .actions { display: flex; gap: 8px; margin-top: 10px; }
+  .action-btn { flex: 1; padding: 9px; border: none; border-radius: 10px; font-size: 13px; font-weight: 600; cursor: pointer; }
+  .approve { background: #cdf0d3; color: #1e7a34; }
+  .reject { background: #fbd0d0; color: #9c1c1c; }
+  .progress { background: var(--button); color: var(--button-text); }
+
+  .empty { text-align: center; color: var(--hint); padding: 40px 0; font-size: 14px; }
+  .hidden { display: none; }
+</style>
+</head>
+<body>
+
+<h1 id="greeting">АХО Mittivoy</h1>
+<div class="subtitle" id="subgreeting">Загрузка…</div>
+
+<div class="tabs" id="tabs"></div>
+<div id="view-pending" class="hidden"></div>
+<div id="view-progress" class="hidden"></div>
+<div id="view-all" class="hidden"></div>
+
+<script>
+  // Заглушка на случай открытия вне Telegram (для проверки вёрстки в обычном браузере)
+  if (!window.Telegram || !window.Telegram.WebApp) {
+    window.Telegram = { WebApp: {
+      ready() {}, expand() {},
+      initDataUnsafe: { user: { id: "test_" + Math.floor(Math.random() * 1000) } },
+      HapticFeedback: { notificationOccurred() {} },
+      showAlert(msg) { alert(msg); },
+    }};
+    console.warn("Открыто вне Telegram — используется тестовая заглушка. В реальном боте будет настоящий Telegram.WebApp.");
+  }
+
+  const tg = window.Telegram.WebApp;
+  tg.ready();
+  tg.expand();
+
+  // ⚠️ Вставьте URL вашего Apps Script Web App
+  const API_BASE = "ВАША_ССЫЛКА_НА_WEB_APP";
+  const chatId = tg.initDataUnsafe?.user?.id || "";
+  let currentUser = null;
+
+  async function api(action, params = {}) {
+    const url = new URL(API_BASE);
+    url.searchParams.set("action", action);
+    url.searchParams.set("chatId", chatId);
+    for (const k in params) url.searchParams.set(k, params[k]);
+    const res = await fetch(url);
+    return res.json();
+  }
+
+  async function init() {
+    currentUser = await api("whoami");
+    if (currentUser.error || (currentUser.role !== "Директор" && currentUser.role !== "Админ" && currentUser.role !== "КХО")) {
+      document.getElementById("greeting").textContent = "Доступ закрыт";
+      document.getElementById("subgreeting").textContent = "Это приложение доступно только директору и АХО.";
+      return;
+    }
+    document.getElementById("greeting").textContent = currentUser.name;
+    document.getElementById("subgreeting").textContent = currentUser.role;
+
+    const isDirector = currentUser.role === "Директор";
+    const tabs = isDirector
+      ? [{ id: "pending", label: "На согласовании" }, { id: "all", label: "Все заявки" }]
+      : [{ id: "progress", label: "В работе" }, { id: "all", label: "Все заявки" }];
+
+    document.getElementById("tabs").innerHTML = tabs.map(t =>
+      `<div class="tab" id="tab-${t.id}" onclick="switchTab('${t.id}')">${t.label}</div>`
+    ).join("");
+
+    switchTab(tabs[0].id);
+  }
+
+  function switchTab(tab) {
+    ["pending", "progress", "all"].forEach(t => {
+      document.getElementById("view-" + t)?.classList.add("hidden");
+      document.getElementById("tab-" + t)?.classList.remove("active");
+    });
+    document.getElementById("view-" + tab).classList.remove("hidden");
+    document.getElementById("tab-" + tab)?.classList.add("active");
+
+    if (tab === "pending") loadRequests({ status: "Новая" }, "view-pending");
+    if (tab === "progress") loadRequests({ status: "Одобрена" }, "view-progress");
+    if (tab === "all") loadRequests({}, "view-all");
+  }
+
+  async function loadRequests(filter, containerId) {
+    const container = document.getElementById(containerId);
+    container.innerHTML = '<div class="empty">Загрузка…</div>';
+    const list = await api("allRequests", filter);
+    if (!list.length) {
+      container.innerHTML = '<div class="empty">Заявок нет</div>';
+      return;
+    }
+    const isDirector = currentUser.role === "Директор";
+    container.innerHTML = list.reverse().map(r => {
+      let actions = "";
+      if (isDirector && r.status === "Новая") {
+        actions = `<div class="actions">
+          <button class="action-btn approve" onclick="setStatus('${r.sheetId}', ${r.rowIndex}, 'Одобрена')">Одобрить</button>
+          <button class="action-btn reject" onclick="setStatus('${r.sheetId}', ${r.rowIndex}, 'Отклонена')">Отклонить</button>
+        </div>`;
+      } else if (!isDirector && r.status === "Одобрена") {
+        actions = `<div class="actions">
+          <button class="action-btn progress" onclick="setStatus('${r.sheetId}', ${r.rowIndex}, 'В работе')">Взять в работу</button>
+        </div>`;
+      } else if (!isDirector && r.status === "В работе") {
+        actions = `<div class="actions">
+          <button class="action-btn approve" onclick="setStatus('${r.sheetId}', ${r.rowIndex}, 'Выполнена')">Отметить выполненной</button>
+        </div>`;
+      }
+      return `<div class="card">
+        <div class="req-top">
+          <span class="req-type">${r.type}</span>
+          <span class="status status-${statusClass(r.status)}">${r.status}</span>
+        </div>
+        <div class="req-desc">${escapeHtml(r.description)}</div>
+        <div class="req-meta">${r.branch} · ${escapeHtml(r.username)} · ${formatDate(r.date)}</div>
+        ${actions}
+      </div>`;
+    }).join("");
+  }
+
+  async function setStatus(sheetId, rowIndex, newStatus) {
+    await api("updateStatus", { sheetId, rowIndex, newStatus });
+    tg.HapticFeedback?.notificationOccurred("success");
+    const activeTab = document.querySelector(".tab.active")?.id.replace("tab-", "");
+    if (activeTab) switchTab(activeTab);
+  }
+
+  function statusClass(s) { return (s || "").toLowerCase().replace(/\s+/g, "-"); }
+  function escapeHtml(s) { const d = document.createElement("div"); d.textContent = s; return d.innerHTML; }
+  function formatDate(d) { return new Date(d).toLocaleDateString("ru-RU", { day: "2-digit", month: "2-digit" }); }
+
+  init();
+</script>
+</body>
+</html>
